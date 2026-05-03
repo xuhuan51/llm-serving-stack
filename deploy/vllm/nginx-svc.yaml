@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: my-nginx-svc
+spec:
+  type: ClusterIP
+  selector:
+    app: web              # ← 关键：找 label 是 app=web 的 Pod
+  ports:
+    - port: 80            # Service 监听的端口
+      targetPort: 80      # 转发到 Pod 的端口

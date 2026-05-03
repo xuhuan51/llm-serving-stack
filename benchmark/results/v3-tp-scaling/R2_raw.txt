@@ -1,0 +1,10 @@
+
+mode=baseline  concurrency=32  n=200  short=200  long-context=0
+  total wall time: 11.02s
+
+  [short]  n=200  tokens/req avg=28
+    metric         min       p25       p50       p75       p95       p99       max       avg
+    --------------------------------------------------------------------------------
+    TTFT         51.6ms     61.5ms     65.2ms    105.0ms    172.7ms   7220.0ms   7234.7ms    157.2ms
+    TPOT         13.2ms     16.9ms     17.1ms     17.4ms    294.9ms    348.6ms    359.1ms     56.2ms
+    E2E         373.3ms    472.0ms    565.1ms    642.1ms   7888.9ms   7980.4ms   8044.2ms   1701.9ms

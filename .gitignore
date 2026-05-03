@@ -1,0 +1,29 @@
+# AI agent state
+.claude/
+.codex/
+.agents/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+
+# Large binaries / model weights
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+
+# Logs / runtime
+*.pid
+
+# Editor
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db

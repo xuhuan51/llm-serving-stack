@@ -1,0 +1,19 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: nginx-deploy
+spec:
+  replicas: 3                 # ★ 我要 3 个副本
+  selector:
+    matchLabels:
+      app: web                # 管理 label=app:web 的 Pod
+  template:                   # ★ Pod 模板（套娃：Deployment 里嵌一个 Pod 定义）
+    metadata:
+      labels:
+        app: web              # Pod 的 label，必须匹配上面 selector
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.25
+          ports:
+            - containerPort: 80
