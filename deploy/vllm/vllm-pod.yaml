@@ -4,6 +4,10 @@ metadata:
   name: vllm-qwen-k8s
   labels:
     app: vllm
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "8000"
+    prometheus.io/path: "/metrics"
 spec:
   containers:
     - name: vllm
