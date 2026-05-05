@@ -19,7 +19,7 @@
 |------|------|------|
 | V0 | 单卡 vLLM 推理基线 | ✅ |
 | V1 | Kubernetes 部署（kubeadm + Calico CNI + NVIDIA Device Plugin） | ✅ |
-| V2 | 可观测性体系（Prometheus + Grafana + SLO 面板） | 🔧 进行中 |
+| V2 | 可观测性体系（Prometheus + Grafana + SLO 面板） | ✅ |
 | V3 | 多卡张量并行 scaling 实测（TP=1/2/4，含拓扑对照） | ✅ 数据完成，文档化中 |
 | V4 | 混合负载压测与 P95 抖动归因 | 📋 |
 | V5 | 优化方案对照（chunked prefill / 调度参数 / PD 可行性） | 📋 |
@@ -36,6 +36,42 @@
 - vLLM Pod (Qwen2.5-7B-AWQ) + NodePort Service 端到端推理验证
 
 详见 [docs/v1-k8s.md](docs/v1-k8s.md)，YAML 在 [deploy/vllm/](deploy/vllm/)。
+
+### V2 — 可观测性体系（Prometheus + Grafana + SLO 面板）
+
+在 K8s 集群内部署 Prometheus + Grafana，基于 vLLM `/metrics` 端点构建 11 个核心 panel 的 SLO 仪表板，覆盖从基础 SLI 到 LLM 推理专属指标的完整链路。
+
+**Dashboard 11 panel 设计：**
+
+| 类别 | Panel | 关键 PromQL |
+|------|-------|-------------|
+| **基础 SLI** | QPS / TTFT P95 / TPOT P95 / E2E P95+P99 | `histogram_quantile` over vLLM histogram metrics |
+| **调度状态** | Running / Waiting Requests | `vllm:num_requests_running`、`_waiting` |
+| **资源** | KV Cache Usage | `vllm:kv_cache_usage_perc` |
+| **LLM 专属** | Prefill vs Decode P95 | `request_prefill_time` / `request_decode_time` 分段 |
+| | Queue Time P95 | `request_queue_time_seconds` — 容量瓶颈信号 |
+| | Preemption Rate | `rate(vllm:num_preemptions_total)` — KV 抢占红线 |
+| | Prefix Cache Hit Rate | `prefix_cache_hits / prefix_cache_queries` |
+| | Token Throughput | `prompt_tokens` vs `generation_tokens` 拆解 |
+
+**验证压测（Qwen2.5-7B-AWQ, 24 并发 × 300 请求 × max_tokens=256）：**
+
+- Sustained generation throughput **200 tokens/s**（A30 单卡 + 24 并发）
+- Decode-bound 工作负载：prefill ≈ 0s（prefix cache 加速）+ decode ≈ 30s 主导 E2E ~40s
+- KV cache 仅 1.5%，preemption=0 — 当前瓶颈是 GPU 算力分摊而非显存
+- TPOT P95 = 150 ms/token，呈现 decode 阶段 memory-bound 的典型并发摊薄行为
+
+**截图：**
+
+基础 6 panel（QPS / TTFT / TPOT / E2E / Running-Waiting / KV Cache）：
+
+![v2-basic](docs/screenshots/v2.4-grafana-vllm-slo-part1.png)
+
+进阶 5 panel（Prefill-Decode 拆解 / Queue Time / Preemption / Prefix Cache / Token Throughput）：
+
+![v2-advanced](docs/screenshots/v2.4-grafana-vllm-slo-part2.png)
+
+部署 manifest：[deploy/monitoring/](deploy/monitoring/)（Prometheus + Grafana + Dashboard JSON）
 
 ### V3 — Tensor Parallel Scaling 实测
 
