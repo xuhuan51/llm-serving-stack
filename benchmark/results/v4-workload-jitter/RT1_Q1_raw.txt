@@ -1,0 +1,23 @@
+
+=== V4 Quadrant Q1: short-short (API call) ===
+  prompt_mode = short
+  max_tokens = 50, ignore_eos = False
+  concurrency = 16, num_requests = 100
+  base_url = http://localhost:8000/v1
+
+  warmup (5 requests)...
+  benchmarking 100 requests...
+
+  total wall time: 11.01s
+  throughput: 9.08 req/s
+  total tokens generated: 2869
+  token throughput: 260.5 tok/s
+
+  [Q1]  n=100  avg_tokens/req=29
+    metric       p50       p95       p99       max       avg
+    --------------------------------------------------------
+    TTFT       64.4ms    235.5ms   6404.0ms   6404.0ms    215.9ms
+    TPOT       22.0ms    286.1ms    323.7ms    323.7ms     55.1ms
+    E2E       697.4ms   7223.2ms   7345.8ms   7345.8ms   1708.8ms
+
+  saved: results/p1_4_workload_jitter/RT1_Q1_result.json

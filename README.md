@@ -21,7 +21,7 @@
 | V1 | Kubernetes 部署（kubeadm + Calico CNI + NVIDIA Device Plugin） | ✅ |
 | V2 | 可观测性体系（Prometheus + Grafana + SLO 面板） | ✅ |
 | V3 | 多卡张量并行 scaling 实测（TP=1/2/4，含拓扑对照） | ✅ 数据完成，文档化中 |
-| V4 | 混合负载压测与 P95 抖动归因 | 📋 |
+| V4 | 混合负载压测与 P95 抖动归因 | 🟡 进行中（T1-Q1/Q2 完成） |
 | V5 | 优化方案对照（chunked prefill / 调度参数 / PD 可行性） | 📋 |
 | V6 | HPA 弹性扩缩容 | 📋 |
 

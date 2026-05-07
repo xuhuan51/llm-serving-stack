@@ -1,0 +1,4 @@
+[poller] writing to results/p1_4_workload_jitter/RT1_Q1_metrics.jsonl, interval=1.0s
+
+[poller] received SIGINT, stopping...
+[poller] wrote 19 samples to results/p1_4_workload_jitter/RT1_Q1_metrics.jsonl
