@@ -1,0 +1,12 @@
+{
+  "engine": "sglang",
+  "wall_start_ts": 1778324159.7490623,
+  "wall_end_ts": 1778324882.939475,
+  "kv_usage_max": 0.19203121853585312,
+  "kv_usage_p95": 0.19203121853585312,
+  "running_max": 64.0,
+  "waiting_max": 0.0,
+  "decode_p99_ms": null,
+  "ttft_p99_ms": 395.87096774193554,
+  "retract_lines": 0
+}

@@ -1,0 +1,13 @@
+{
+  "engine": "vllm",
+  "wall_start_ts": 1778320142.025753,
+  "wall_end_ts": 1778320695.035838,
+  "kv_usage_max": 0.39626105019081204,
+  "kv_usage_p95": 0.38428095261098494,
+  "running_max": 128.0,
+  "waiting_max": 0.0,
+  "decode_p99_ms": 238800.0,
+  "ttft_p99_ms": 981.1764705882355,
+  "queue_p99_ms": 297.00000000000006,
+  "preemptions_delta": 0
+}
