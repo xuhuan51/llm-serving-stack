@@ -24,6 +24,23 @@ import time
 from pathlib import Path
 
 import torch
+
+# ★ Monkey-patch DeepSpeed ZeRO++ CUDAQuantizer.dequantize 强制 bf16 输出
+#   DS 0.19 默认 dequantize 返回 fp16, 跟 bf16 模型 forward 时 dtype mismatch
+#   必须在 deepspeed.zero.Init() 之前 patch
+def _patch_ds_quantizer_bf16():
+    try:
+        import deepspeed.runtime.zero.partition_parameters as zpp
+        _orig = zpp.CUDAQuantizer.dequantize
+        def _bf16_dequant(self, quantized_param, scale):
+            out = _orig(self, quantized_param, scale)
+            return out.to(torch.bfloat16) if out.dtype != torch.bfloat16 else out
+        zpp.CUDAQuantizer.dequantize = _bf16_dequant
+    except Exception as e:
+        print(f"[warn] ZeRO++ bf16 monkey-patch failed: {e}")
+
+_patch_ds_quantizer_bf16()
+
 from datasets import load_dataset
 from transformers import (
     AutoModelForCausalLM,
@@ -55,6 +72,8 @@ def parse_args():
     p.add_argument("--gradient_checkpointing", action="store_true", default=True,
                    help="省 activation 显存的关键开关")
     p.add_argument("--report_to", default="none", choices=["none", "wandb", "tensorboard"])
+    p.add_argument("--packing", action="store_true", default=False,
+                   help="Pass 2 优化: SFTTrainer packing 短样本拼接, 消除 padding 浪费")
     p.add_argument("--local_rank", type=int, default=-1, help="injected by deepspeed launcher")
     args, _ = p.parse_known_args()
     return args
@@ -178,6 +197,7 @@ def main():
         deepspeed=args.deepspeed,
         gradient_checkpointing=args.gradient_checkpointing,
         max_length=args.max_seq_length,
+        packing=args.packing,
         report_to=args.report_to,
         # throughput observability
         log_level="info",

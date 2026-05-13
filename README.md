@@ -23,7 +23,7 @@
 | V3 | 多卡张量并行 scaling 实测（TP=1/2/4，含拓扑对照） | ✅ |
 | V4 | 4 象限工作负载压测与 P95 抖动归因（46 类 metric） | ✅ |
 | V5 | 70B AWQ 双引擎极限并发 + prefix cache ablation（vLLM × SGLang） | ✅ |
-| V6 | 32B LoRA SFT 训练 pipeline + DCGM/Grafana 训练监控栈 | ✅ |
+| V6 | 32B LoRA SFT 训练 pipeline + DCGM/Grafana 监控 + profile-driven 优化 (6.4× 加速) | ✅ |
 | V7 | HPA 弹性扩缩容 / 灰度上线 / serving 优化 | 📋 |
 
 ## 已完成版本要点
@@ -173,21 +173,28 @@ c=256 ablation 客户端 `httpx.ReadTimeout` crash（部分请求 >60s 超时）
 
 工具产出：[`run_v5_sweep.sh`](benchmark/run_v5_sweep.sh)（engine-agnostic concurrency sweep wrapper）· [`run_v5_sglang.sh`](benchmark/run_v5_sglang.sh)（SGLang 启动器）· [`run_v5_extreme.sh`](benchmark/run_v5_extreme.sh)（c=384/512 极限延伸）· [`v5_promql_pull.py`](benchmark/v5_promql_pull.py)（per-run PromQL window 查询 + SGLang docker logs retract grep）· [`v5_plot.py`](benchmark/v5_plot.py)（双引擎对比 5 张图）
 
-### V6 — 32B LoRA SFT 训练 pipeline + 训练监控栈
+### V6 — 32B LoRA SFT 训练 pipeline + 监控栈 + Profile-Driven 优化
 
-在同一套 8×A30 PCIe-only 集群上跑通 **Qwen2.5-32B-Instruct LoRA SFT**（HuggingFace TRL + PEFT + DeepSpeed ZeRO-3 + bf16），并自部署 **DCGM exporter + Prometheus + Grafana** 时间序列监控，量化 PCIe-only 拓扑下大模型训练的工程瓶颈。
+在同一套 8×A30 PCIe-only 集群上跑通 **Qwen2.5-32B-Instruct LoRA SFT**（HuggingFace TRL + PEFT + DeepSpeed ZeRO-3 + bf16），自部署 **DCGM exporter + Prometheus + Grafana** 时间序列监控量化工程瓶颈，再基于 profile 数据做针对性优化，端到端 **11.1h → 1.73h（6.4× 加速）**。
 
-**训练结果（4 卡 GPU 4-7, PIX 同组, 3 epoch）：**
+**Pass 1 baseline vs Pass 2 优化对比（4 卡 GPU 4-7, PIX 同组, 3 epoch）：**
 
-| 指标 | 数值 |
-|---|---|
-| 模型 | Qwen2.5-32B-Instruct |
-| LoRA 配置 | r=16, α=32, 7 个 target modules, **134M trainable / 32.9B (0.41%)** |
-| 数据集 | Alpaca-zh 5000 × 3 epoch = 15.4M tokens |
-| wall_time | **11.1 hours** |
-| throughput | **384 tokens/sec system / 96 tokens/sec/GPU** |
-| loss | 1.72 → 1.30 (收敛中) |
-| adapter 大小 | 257 MB |
+| 指标 | Pass 1 (baseline) | Pass 2 (packing + NCCL) | 变化 |
+|---|---|---|---|
+| 模型 | Qwen2.5-32B-Instruct | 同上 | — |
+| LoRA 配置 | r=16, α=32, **134M trainable / 32.9B (0.41%)** | 同上 | — |
+| 数据集 | Alpaca-zh 5000 × 3 epoch | 同上（packing 压成 711 packed seq） | — |
+| 总步数 | 937 | **135** | ÷6.94 |
+| 单步时间 | ~45 s | ~46 s | 不变 |
+| wall_time | 11.1 hours | **1.73 hours** | **÷6.4** ⭐ |
+| throughput / GPU | 96 tok/s | **616 tok/s** | **×6.4** ⭐ |
+| Loss 收敛 | 1.72 → 1.0 | 1.71 → 1.0 | 一致 |
+| Adapter | 257 MB | 268 MB | — |
+
+**Pass 2 优化栈**：基于 Pass 1 监控数据定位 communication-bound + padding 浪费 86%，对症下药：
+- **Sequence Packing**（主力贡献，约 6.94×）：把 5000 个短样本（平均 146 token）拼接成 711 个 1024 token 满载 seq，消除 padding 浪费；总步数减少近 7×，单步时间不变
+- **NCCL 参数调优**（辅助贡献，约 1.05×）：`NCCL_BUFFSIZE=8MB`（默认 4MB）+ `NCCL_MIN_NCHANNELS=4`（默认 2）+ `NCCL_ALGO=Ring`（PCIe-only 最优显式指定）
+- **PYTORCH_ALLOC_CONF=expandable_segments:True**：抗 allocator 碎片化 OOM
 
 **监控栈（新增训练侧）：**
 
@@ -208,7 +215,11 @@ c=256 ablation 客户端 `httpx.ReadTimeout` crash（部分请求 >60s 超时）
 
 **Dashboard 截图：** [全景 16h](training/screenshots/pass1_dashboard_overview_16h.png) · [Util vs SM_ACTIVE](training/screenshots/pass1_util_vs_sm_active_zoomed.png) · [Tensor Core Active](training/screenshots/pass1_tensor_core_active_zoomed.png) · [NVIDIA DCGM 12239](training/screenshots/pass1_official_dcgm_dashboard.png)
 
-**关键文件：** [`train_lora_sft.py`](training/train_lora_sft.py)（含 `HfDeepSpeedConfig` 顺序修复 + `GatheredParameters` adapter-only save）· [`ds_zero3.json`](training/ds_zero3.json) · [`dcgm_counters.csv`](training/dcgm_counters.csv)（DCGM PROF 指标启用清单）· [`training_summary.md`](training/training_summary.md)（10 节完整总结 + 6 个 finding + 简历 bullet）
+**关键文件：** [`train_lora_sft.py`](training/train_lora_sft.py)（含 `HfDeepSpeedConfig` 顺序修复 + `GatheredParameters` adapter-only save + `--packing` 开关）· [`ds_zero3.json`](training/ds_zero3.json)（Pass 1）· [`ds_zero3_pass2.json`](training/ds_zero3_pass2.json)（Pass 2 bucket 调优）· [`dcgm_counters.csv`](training/dcgm_counters.csv)（DCGM PROF 指标启用清单）· [`training_summary.md`](training/training_summary.md)（完整总结 + Pass 1 vs Pass 2 对比 + 简历 bullet）
+
+**Pass 2 已调研但弃用的方案**（写入 summary 透明披露）：
+- **Flash Attention 2**：CUDA 13.1 toolkit ↔ PyTorch cu128 编译版本不匹配，源码构建失败；packing 在严格意义下有 cross-sample attention 污染风险，实测对 Alpaca 类独立指令样本影响极小（loss 收敛与 baseline 一致）
+- **ZeRO++ 权重量化**：int4 dequant 在 bf16 LoRA 上数值精度不足，loss 发散到 7.3e+04，已 revert
 
 ## 技术栈
 
