@@ -23,7 +23,8 @@
 | V3 | 多卡张量并行 scaling 实测（TP=1/2/4，含拓扑对照） | ✅ |
 | V4 | 4 象限工作负载压测与 P95 抖动归因（46 类 metric） | ✅ |
 | V5 | 70B AWQ 双引擎极限并发 + prefix cache ablation（vLLM × SGLang） | ✅ |
-| V6 | HPA 弹性扩缩容 / 灰度上线 | 📋 |
+| V6 | 32B LoRA SFT 训练 pipeline + DCGM/Grafana 训练监控栈 | ✅ |
+| V7 | HPA 弹性扩缩容 / 灰度上线 / serving 优化 | 📋 |
 
 ## 已完成版本要点
 
@@ -172,11 +173,49 @@ c=256 ablation 客户端 `httpx.ReadTimeout` crash（部分请求 >60s 超时）
 
 工具产出：[`run_v5_sweep.sh`](benchmark/run_v5_sweep.sh)（engine-agnostic concurrency sweep wrapper）· [`run_v5_sglang.sh`](benchmark/run_v5_sglang.sh)（SGLang 启动器）· [`run_v5_extreme.sh`](benchmark/run_v5_extreme.sh)（c=384/512 极限延伸）· [`v5_promql_pull.py`](benchmark/v5_promql_pull.py)（per-run PromQL window 查询 + SGLang docker logs retract grep）· [`v5_plot.py`](benchmark/v5_plot.py)（双引擎对比 5 张图）
 
+### V6 — 32B LoRA SFT 训练 pipeline + 训练监控栈
+
+在同一套 8×A30 PCIe-only 集群上跑通 **Qwen2.5-32B-Instruct LoRA SFT**（HuggingFace TRL + PEFT + DeepSpeed ZeRO-3 + bf16），并自部署 **DCGM exporter + Prometheus + Grafana** 时间序列监控，量化 PCIe-only 拓扑下大模型训练的工程瓶颈。
+
+**训练结果（4 卡 GPU 4-7, PIX 同组, 3 epoch）：**
+
+| 指标 | 数值 |
+|---|---|
+| 模型 | Qwen2.5-32B-Instruct |
+| LoRA 配置 | r=16, α=32, 7 个 target modules, **134M trainable / 32.9B (0.41%)** |
+| 数据集 | Alpaca-zh 5000 × 3 epoch = 15.4M tokens |
+| wall_time | **11.1 hours** |
+| throughput | **384 tokens/sec system / 96 tokens/sec/GPU** |
+| loss | 1.72 → 1.30 (收敛中) |
+| adapter 大小 | 257 MB |
+
+**监控栈（新增训练侧）：**
+
+- **DCGM exporter** (docker, `--privileged --pid host --gpus all`)：自定义 `counters.csv` 启用 `PROF` 指标（`SM_ACTIVE` / `PIPE_TENSOR_ACTIVE` / `PCIE_TX_BYTES` / `PCIE_RX_BYTES` / `DRAM_ACTIVE`），暴露在 `:9400/metrics`
+- **Prometheus** 5 秒 scrape 间隔，job=`dcgm-training`
+- **Grafana 训练专项 Dashboard**：8 panel 覆盖 Power / Util-vs-SM / TC Active / PCIe TX-RX / FB Used / DRAM Active / Temp / SM Clock
+
+**核心 finding（详见 [training_summary.md](training/training_summary.md)）：**
+
+| 现象 | 数据 | 解读 |
+|---|---|---|
+| ① `nvidia-smi GPU-Util` 失真 | Util 100% 但 DCGM `SM_ACTIVE` 仅 10–15% | nvidia-smi 把"等通信"也算 100% util，工业级监控必须接 DCGM |
+| ② Tensor Core 算力饥饿 | `PIPE_TENSOR_ACTIVE` 全程 < 5% | 真正 matmul 时间不到 wall time 5% |
+| ③ ZeRO-3 通信主导 | 推断通信占 wall time ~85% | PCIe-only 拓扑的工程天花板 |
+| ④ PCIe 拓扑跨组 4× 慢 | 6 卡跨 PIX/PHB 组 204s/step vs 8 卡 51s/step | 选卡必看 `nvidia-smi topo -m`，同 PCIe Switch (PIX) 优先 |
+| ⑤ `save_model` NCCL timeout | 默认 ZeRO-3 存盘 AllGather 64 GB base, PCIe-only 30 分钟跑不完 | 用 `deepspeed.zero.GatheredParameters` 精确 gather 只 LoRA 268 MB，秒级完成 |
+| ⑥ `expandable_segments` 解 OOM | 22.06 GB peak，差 20 MB OOM，allocator 碎片 2.48 GB | `PYTORCH_ALLOC_CONF=expandable_segments:True` 复用碎片 |
+
+**Dashboard 截图：** [全景 16h](training/screenshots/pass1_dashboard_overview_16h.png) · [Util vs SM_ACTIVE](training/screenshots/pass1_util_vs_sm_active_zoomed.png) · [Tensor Core Active](training/screenshots/pass1_tensor_core_active_zoomed.png) · [NVIDIA DCGM 12239](training/screenshots/pass1_official_dcgm_dashboard.png)
+
+**关键文件：** [`train_lora_sft.py`](training/train_lora_sft.py)（含 `HfDeepSpeedConfig` 顺序修复 + `GatheredParameters` adapter-only save）· [`ds_zero3.json`](training/ds_zero3.json) · [`dcgm_counters.csv`](training/dcgm_counters.csv)（DCGM PROF 指标启用清单）· [`training_summary.md`](training/training_summary.md)（10 节完整总结 + 6 个 finding + 简历 bullet）
+
 ## 技术栈
 
 - **推理引擎**：vLLM (BF16 / AWQ)，对照 SGLang
+- **训练**：HuggingFace TRL SFTTrainer + PEFT (LoRA) + DeepSpeed ZeRO-3 + bf16
 - **编排**：Kubernetes 1.31 (kubeadm) · Calico CNI · containerd · NVIDIA Device Plugin
-- **可观测性**：Prometheus · Grafana · vLLM `/metrics` · `nvidia-smi dmon`
+- **可观测性**：Prometheus · Grafana · vLLM `/metrics` · DCGM exporter (含 PROF 指标)
 - **压测**：自研基于 OpenAI streaming API 的并发压测客户端
 - **硬件**：8×NVIDIA A30 (24GB HBM2, PCIe Gen4, 无 NVLink)
 
@@ -198,6 +237,14 @@ llm-serving-stack/
 │       ├── v3-tp-scaling/         # V3 TP=1/2/4 PCIe-only 拓扑对照
 │       ├── p1_4_workload_jitter/  # V4 4 象限 × 8 run + 11 张图 + V4_summary.md
 │       └── p1_5_chunked_prefill/  # V5 双引擎 sweep + 5 张图 + ablation + V5_summary + V5_interview_qa
+├── training/                      # V6: 32B LoRA SFT pipeline + 监控
+│   ├── train_lora_sft.py          # 主训练脚本 (HF TRL + PEFT + DeepSpeed)
+│   ├── ds_zero2.json / ds_zero3.json  # DeepSpeed 配置
+│   ├── dcgm_counters.csv          # DCGM exporter 自定义 PROF 指标
+│   ├── prep_alpaca_zh.py          # 数据集准备
+│   ├── training_summary.md        # V6 完整总结 (10 节 + 6 finding + 简历 bullet)
+│   ├── CONCEPTS_CHEATSHEET.md     # 训练概念速记
+│   └── screenshots/               # Grafana 11h 时间序列截图
 └── notes/                         # 学习笔记与源码精读
     ├── vllm/                      # vLLM 源码与 scheduler 笔记
     ├── sglang/
